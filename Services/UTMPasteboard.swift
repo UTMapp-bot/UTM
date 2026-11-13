@@ -75,7 +75,11 @@ import CocoaSpice
     }
     
     private func onTimerTick() {
-        lock.lock()
+        // SPICE holds the lock while another app is slow to provide promised
+        // data; never wait for that on the main thread, poll on the next tick
+        guard lock.try() else {
+            return
+        }
         defer {
             lock.unlock()
         }
