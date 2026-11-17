@@ -45,7 +45,7 @@ class VMDisplayQemuMetalWindowController: VMDisplayQemuWindowController {
     private var globalEventMonitor: Any? = nil
     private var ctrlKeyDown: Bool = false
     private var screenChangedToken: Any?
-    /// `CAMetalDisplayLink` on macOS 14 and later
+    /// `CADisplayLink` of the view on macOS 14 and later
     private var displayLink: AnyObject?
 
     private var displayConfig: UTMQemuConfigurationDisplay? {
@@ -99,11 +99,12 @@ class VMDisplayQemuMetalWindowController: VMDisplayQemuWindowController {
             logger.critical("Failed to create renderer.")
             return
         }
-        if #available(macOS 14, *), let layer = metalView.layer as? CAMetalLayer {
-            // A CAMetalDisplayLink paces the layer at the rate it requests; MTKView's own
-            // timer can stay at 60 Hz on a ProMotion display.
-            let link = CAMetalDisplayLink(metalLayer: layer)
-            link.delegate = self
+        if #available(macOS 14, *) {
+            // MTKView's own timer can stay at 60 Hz on a ProMotion display when the main display
+            // is a 60 Hz one. A display link made by the view follows the screen the view is on,
+            // and asks MTKView to draw, so MTKView still sizes and acquires the drawables.
+            let link = metalView.displayLink(target: metalView, selector: #selector(VMMetalView.displayLinkDidFire(_:)))
+            link.isPaused = true // until the VM is live
             link.add(to: .main, forMode: .common)
             metalView.isPaused = true
             displayLink = link
@@ -137,7 +138,7 @@ class VMDisplayQemuMetalWindowController: VMDisplayQemuWindowController {
         guard let fps = preferredFramesPerSecond else {
             return nil
         }
-        if #available(macOS 14, *), let link = displayLink as? CAMetalDisplayLink {
+        if #available(macOS 14, *), let link = displayLink as? CADisplayLink {
             let rate = Float(fps)
             link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
         } else {
@@ -147,7 +148,7 @@ class VMDisplayQemuMetalWindowController: VMDisplayQemuWindowController {
     }
 
     override func windowWillClose(_ notification: Notification) {
-        if #available(macOS 14, *), let link = displayLink as? CAMetalDisplayLink {
+        if #available(macOS 14, *), let link = displayLink as? CADisplayLink {
             link.invalidate()
         }
         displayLink = nil
@@ -188,7 +189,7 @@ class VMDisplayQemuMetalWindowController: VMDisplayQemuWindowController {
         super.enterLive()
         // pick up an FPS limit changed while the window was open
         updateFrameRate()
-        if #available(macOS 14, *), let link = displayLink as? CAMetalDisplayLink {
+        if #available(macOS 14, *), let link = displayLink as? CADisplayLink {
             link.isPaused = false
         }
         setControl(.resize, isEnabled: false) // disable item
@@ -199,7 +200,7 @@ class VMDisplayQemuMetalWindowController: VMDisplayQemuWindowController {
     
     override func enterSuspended(isBusy busy: Bool) {
         if !busy {
-            if #available(macOS 14, *), let link = displayLink as? CAMetalDisplayLink {
+            if #available(macOS 14, *), let link = displayLink as? CADisplayLink {
                 link.isPaused = true
             }
             metalView.isHidden = true
@@ -787,23 +788,5 @@ extension VMDisplayQemuMetalWindowController {
         let sheetWindow = NSWindow(contentViewController: content)
         sheetWindow.setContentSize(fittingSize)
         window.beginSheet(sheetWindow)
-    }
-}
-
-// MARK: - Display link
-
-@available(macOS 14, *)
-extension VMDisplayQemuMetalWindowController: CAMetalDisplayLinkDelegate {
-    func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
-        let texture = update.drawable.texture
-        if let layer = metalView.layer as? CAMetalLayer,
-           CGFloat(texture.width) != layer.drawableSize.width || CGFloat(texture.height) != layer.drawableSize.height {
-            // taken before the view was resized: the renderer's viewport already has the new size, so
-            // draw into the next drawable, which has it too
-            return
-        }
-        metalView.displayLinkDrawable = update.drawable
-        renderer.draw(in: metalView)
-        metalView.displayLinkDrawable = nil
     }
 }
